@@ -1,0 +1,26 @@
+{
+  "knowledge": {
+    "paths": [
+      "../cme_private/approved.md"
+    ],
+    "retrieval": "keyword"
+  },
+  "vector_store": {
+    "enabled": false,
+    "provider": "chroma",
+    "persist_directory": "../cme_private/chroma_db"
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4.1-mini",
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "limits": {
+    "session": 8,
+    "ip_minute": 3,
+    "ip_day": 15,
+    "global_minute": 50,
+    "global_hour": 500,
+    "llm_day": 30
+  }
+}
