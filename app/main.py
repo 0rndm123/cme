@@ -14,11 +14,11 @@ PORT=int(os.getenv('LOCAL_PORT','8765'))
 def path(key,default):
  p=Path(os.getenv(key,default)).expanduser()
  return (p if p.is_absolute() else ROOT/p).resolve()
-KB=path('KNOWLEDGE_PATH','../cme_private/approved.md')
+DEFAULT_KB=path('KNOWLEDGE_PATH','../cme_private/approved.md')
 STATE=path('STATE_PATH','state/limits.sqlite3')
 KEY=os.getenv('OPENAI_API_KEY','').strip()
 MODEL=os.getenv('OPENAI_MODEL','gpt-4.1-mini')
-LIMITS={k:int(os.getenv(k,str(v))) for k,v in {'session':8,'ip_minute':3,'ip_day':15,'global_minute':50,'global_hour':500,'llm_day':30}.items()}
+LIMITS={k:int(os.getenv(env,str(v))) for k,env,v in [('session','MAX_REQUESTS_SESSION',8),('ip_minute','MAX_REQUESTS_IP_MINUTE',3),('ip_day','MAX_REQUESTS_IP_DAY',15),('global_minute','MAX_REQUESTS_GLOBAL_MINUTE',50),('global_hour','MAX_REQUESTS_GLOBAL_HOUR',500),('llm_day','MAX_LLM_CALLS_DAY',30)]}
 app=FastAPI(docs_url=None,redoc_url=None,openapi_url=None)
 def db():
  STATE.parent.mkdir(parents=True,exist_ok=True)
@@ -27,18 +27,29 @@ def db():
  c.execute('CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,created REAL)')
  c.execute('CREATE TABLE IF NOT EXISTS hits(ts REAL,sid TEXT,ip TEXT,kind TEXT)')
  c.execute('CREATE INDEX IF NOT EXISTS hits_ts ON hits(ts)')
+ c.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
  return c
+def knowledge_path():
+ c=db()
+ try:
+  row=c.execute("SELECT value FROM settings WHERE key='knowledge_path'").fetchone()
+ finally:c.close()
+ return Path(row[0]) if row else DEFAULT_KB
+
 def knowledge():
- if not KB.is_file():return None
- if KB.suffix=='.json': f=json.loads(KB.read_text(encoding='utf8'))['facts']
- else:
-  parts=re.split(r'(?m)^##\s+',KB.read_text(encoding='utf8'))[1:];f=[]
+ kb=knowledge_path()
+ if not kb.is_file():return None
+ if kb.stat().st_size > 1024*1024:raise ValueError('Knowledge file too large')
+ if kb.suffix.lower()=='.json': f=json.loads(kb.read_text(encoding='utf8'))['facts']
+ elif kb.suffix.lower()=='.md':
+  parts=re.split(r'(?m)^##\s+',kb.read_text(encoding='utf8'))[1:];f=[]
   for block in parts:
    lines=block.strip().splitlines();item={'id':lines[0].strip()}
    for line in lines[1:]:
     m=re.match(r'^(PT|EN):\s*(.*)',line.strip(),re.I)
     if m:item[m[1].lower()]=m[2]
    f.append(item)
+ else:raise ValueError('Unsupported knowledge format')
  if not f or any(not all(x.get(k) for k in ('id','pt','en')) for x in f):raise ValueError('Invalid knowledge')
  return f
 def evidence(question,facts):
@@ -107,7 +118,7 @@ def session(req:Request):
  finally:c.close()
  try: has_kb=knowledge() is not None
  except Exception:has_kb=False
- out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'knowledge_loaded':has_kb})
+ out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'model':MODEL if KEY else None,'knowledge_loaded':has_kb,'knowledge_path':str(knowledge_path())})
  out.set_cookie('cme_session',sid,httponly=True,samesite='strict',max_age=86400)
  return out
 class Q(BaseModel):
@@ -127,3 +138,32 @@ async def chat(req:Request,q:Q):
   r=await graph.ainvoke({'question':q.question,'language':q.language,'facts':facts})
   return {k:r[k] for k in ('answer','sources','mode')}
  except Exception:raise HTTPException(502,'Model error (request counted)')
+
+class KnowledgeSettings(BaseModel):
+ knowledge_path:str=Field(min_length=5,max_length=1000)
+
+@app.post('/api/settings/knowledge')
+def change_knowledge(req:Request, body:KnowledgeSettings):
+ sid=req.cookies.get('cme_session','')
+ c=db()
+ try:
+  valid=bool(sid and c.execute('SELECT 1 FROM sessions WHERE id=? AND created>?',(sid,time.time()-86400)).fetchone())
+ finally:c.close()
+ if not valid:raise HTTPException(403,'Session expired')
+ candidate=Path(body.knowledge_path).expanduser().resolve()
+ if not candidate.is_absolute() or candidate.suffix.lower() not in ('.md','.json'):
+  raise HTTPException(400,'Choose an absolute Markdown or JSON file path')
+ if candidate == ROOT or ROOT in candidate.parents:
+  raise HTTPException(400,'Knowledge must be stored outside CME repository')
+ if not candidate.is_file() or candidate.stat().st_size>1024*1024:
+  raise HTTPException(400,'Knowledge file missing or too large')
+ c=db()
+ try:
+  c.execute('BEGIN IMMEDIATE')
+  c.execute("INSERT INTO settings(key,value) VALUES('knowledge_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(candidate),))
+  c.execute('COMMIT')
+ except BaseException:
+  if c.in_transaction:c.execute('ROLLBACK')
+  raise
+ finally:c.close()
+ return {'ok':True,'knowledge_path':str(candidate)}
