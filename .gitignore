@@ -5,3 +5,6 @@ __pycache__/
 state/
 cme_private/
 *.sqlite3*
+config.local.json
+config.local.*
+!config.local.example.json
