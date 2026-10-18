@@ -8,3 +8,5 @@ cme_private/
 config.local.json
 config.local.*
 !config.local.example.json
+
+/private_knowledge/
