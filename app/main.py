@@ -7,6 +7,7 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import JSONResponse,FileResponse
 from pydantic import BaseModel,Field
 from langgraph.graph import StateGraph,END
+from app.indexer import build_index,search_index,open_index
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -32,6 +33,7 @@ def resolve_external(p):
  return (target if target.is_absolute() else ROOT/target).resolve()
 
 STATE=path('STATE_PATH','state/limits.sqlite3')
+INDEX=path('INDEX_PATH','state/knowledge_fts.sqlite3')
 KEY=os.getenv(CFG['llm']['api_key_env'],'').strip()
 MODEL=CFG['llm']['model']
 LIMITS={k:int(v) for k,v in CFG['limits'].items()}
@@ -80,6 +82,8 @@ def knowledge_from_file(kb):
  return f
 
 def knowledge():
+ if CFG['knowledge'].get('retrieval')=='fts5':
+  return [{'id':'index_enabled','pt':'index','en':'index'}]
  items=[]
  for kb in knowledge_paths():
   facts=knowledge_from_file(kb)
@@ -117,7 +121,11 @@ class S(TypedDict,total=False):
  answer:str
  sources:list
  mode:str
-def retrieve(s:S):return {'selected':evidence(s['question'],s['facts'])}
+def retrieve(s:S):
+ if CFG['knowledge'].get('retrieval')=='fts5':
+  hits=search_index(INDEX,s['question'],top_k=4)
+  return {'selected':[{'id':x['id'],'pt':x['text'],'en':x['text']} for x in hits]}
+ return {'selected':evidence(s['question'],s['facts'])}
 def refuse(s:S):return {'answer':'Não tenho informação aprovada suficiente.' if s['language']=='pt' else 'Insufficient approved information.','sources':[],'mode':'no_evidence'}
 async def answer(s:S):
  facts=s['selected'];language=s['language']
@@ -168,13 +176,27 @@ async def chat(req:Request,q:Q):
  try:facts=knowledge()
  except Exception:raise HTTPException(503,'Invalid knowledge')
  if not facts:raise HTTPException(503,'Knowledge missing')
- reserve(sid,req.client.host,bool(KEY and evidence(q.question,facts)))
+ if CFG['knowledge'].get('retrieval')=='fts5' and not INDEX.is_file():raise HTTPException(503,'Index missing; use reindex control')
+ reserve(sid,req.client.host,bool(KEY and (search_index(INDEX,q.question) if CFG['knowledge'].get('retrieval')=='fts5' else evidence(q.question,facts))))
  try:
   r=await graph.ainvoke({'question':q.question,'language':q.language,'facts':facts})
   return {k:r[k] for k in ('answer','sources','mode')}
  except Exception:raise HTTPException(502,'Model error (request counted)')
 
-class KnowledgeSettings(BaseModel):
- knowledge_path:str=Field(min_length=5,max_length=1000)
 
-# Local configuration is deliberately file-based; no browser endpoint can rewrite it.
+
+@app.post('/api/admin/reindex')
+def reindex(req:Request):
+ sid=req.cookies.get('cme_session','')
+ c=db()
+ try:
+  valid=bool(sid and c.execute('SELECT 1 FROM sessions WHERE id=? AND created>?',(sid,time.time()-86400)).fetchone())
+ finally:c.close()
+ if not valid:raise HTTPException(403,'Session required')
+ folder=CFG['knowledge'].get('directory')
+ if not folder:raise HTTPException(400,'Set knowledge.directory in config.local.json')
+ directory=resolve_external(folder)
+ if directory==ROOT or (ROOT in directory.parents and not (ROOT/'private_knowledge') in directory.parents):
+  raise HTTPException(403,'Refusing to index public source directory')
+ try:return build_index(directory,INDEX)
+ except ValueError as e:raise HTTPException(400,str(e))
