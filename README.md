@@ -1,58 +1,49 @@
-# CME | Portable local chatbot prototype
+# CME — Local chatbot prototype
 
-**This repository contains only the reusable app.** No actual knowledge base, credentials, private logs or runtime state belong in this repository. Work locally only; do not deploy this prototype as-is to Netlify or any public host.
+Standalone LangGraph/LangChain proof-of-concept with a browser testing interface. **Never deploy this prototype to the public internet as-is.** The repository is public, and therefore contains no real knowledge, credentials, or visitor data.
 
 ## Architecture
+- `app/main.py`: FastAPI, defensive input validation, persistent atomic quotas (SQLite), LangGraph retrieval -> answer/refusal workflow, LangChain model adapter.
+- `web/index.html`: portable chat interface with sample questions and live quotas.
+- `examples/approved.example.md`: public demonstration facts only. Your real knowledge document is kept **outside** this repository.
+- `state/limits.sqlite3`: local runtime counters, excluded by gitignore.
 
-- `app/main.py`: local FastAPI service, retrieval and server-side model call, privacy and quota checks.
-- `web/index.html`: replaceable chat UI, calling only `/api/session` and `/api/chat`.
-- `examples/approved.example.md`: illustrative sample knowledge; not loaded by default.
-- **External private folder** (`KNOWLEDGE_PATH`): approved facts kept outside this repository.
-- `state/limits.sqlite3`: persistent SQLite counters, automatically created and gitignored.
-
-The application reads the external knowledge file afresh per request. No endpoint serves the file. `GET /api/session` provides an HttpOnly cookie; POST requests require a valid same-origin Origin header. Server must bind ONLY to `127.0.0.1`.
-
-## Start on Windows (PowerShell)
+## Install on Windows (PowerShell)
 
 ```powershell
+git clone https://github.com/0rndm123/cme.git
+cd cme
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-```
-
-Create a different private folder outside the cme repository, for example `C:\Users\<user>\cme_private`. Copy `examples\approved.example.md` to it as `approved.md`, then set the absolute path in `.env`, e.g. `KNOWLEDGE_PATH=C:/Users/<user>/cme_private/approved.md`.
-
-```powershell
+New-Item -ItemType Directory -Force ..\cme_private
+Copy-Item examples\approved.example.md ..\cme_private\approved.md
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765`. Leave `OPENAI_API_KEY` empty to test extractive mode without provider calls.
+Open **http://127.0.0.1:8765**. The demonstration document is for testing only; replace the file in `../cme_private/approved.md` with your reviewed Markdown. Every block needs a `## identifier` heading followed by one `PT:` and one `EN:` line. JSON `{"facts":[{"id":"...","pt":"...","en":"..."}]}` is also supported.
 
-## Quotas
+Leave `OPENAI_API_KEY` empty to test without paid model calls. For LLM answers, edit the **untracked** `.env` and set a model and your private key. The API key is only read server-side.
 
-| Scope | Default | Window |
-|---|---:|---|
-| Session | 8 | 24h |
-| IP | 3 | Rolling 60s |
-| IP | 15 | Rolling 24h |
-| Globally | 50 | Rolling 60s |
-| Globally | 500 | Rolling 60min |
-| Model calls globally | 30 | Rolling 24h |
+## Rate limits — rolling windows, atomically reserved
 
-SQLite atomically reserves quota before calling the model. HTTP 429 when exceeded. These are **not hard monetary caps**. Use separate provider billing controls. On a local PC, all visits appear to originate from loopback.
+- 8 questions per session per 24h
+- 3 per IP per 60s
+- 15 per IP per 24h
+- 50 total per 60s
+- 500 total per 60min
+- 30 model calls globally per 24h
 
-## Security and limitations
+SQLite counters survive app restarts. Since the local server runs on loopback, all local browsers share the same IP quota. Configure individual and global limits in `.env`. No financial hard cap is provided; the model provider's billing needs separate protection.
 
-- Listen on loopback only; validate Host and Origin. Not ready for public deployment.
-- HttpOnly SameSite Strict session cookie. HTTP localhost does not use Secure; enable for HTTPS.
-- No client-controlled session IDs or forwarded headers for IP identity.
-- No API secrets or private knowledge in this public repo.
-- Approved facts and citations reduce hallucination, but do not guarantee factual correctness.
-- Cap questions to 500 characters and responses to 300 completion tokens.
-- Future public deployment requires stronger identity, privacy-preserving IP quotas, abuse mitigation and a shared atomic counter store.
-- Do not commit `.env`, `state/` or private knowledge.
+## API
 
-## Migration to Portfolio
+- `GET /api/session`: creates HttpOnly SameSite=Strict cookie and returns counters/status.
+- `POST /api/chat`: JSON `{"question":"...","language":"pt"}` with same-origin Origin and session cookie.
 
-Reuse the `/api/session`, `/api/chat` contracts and retrieval/prompt logic. Replace the local FastAPI host with a Netlify Functions adapter or separately hosted service, SQLite with atomic Supabase quotas, and configure secure HTTPS cookies and server-only secrets. Keep Portfolio production unchanged until tested.
+This is a local-only experimental security baseline; not a production security audit. The server rejects foreign Host/Origin values, and `uvicorn` must bind to `127.0.0.1`, never `0.0.0.0`. The metadata is not a robust public authentication method. The retrieval is basic keyword matching, and even approved-document prompting **cannot guarantee zero hallucinations**. Improve evidence verification, concurrent quota semantics and budget enforcement prior to launch.
+
+## Future migration to Portfolio
+
+Keep the frontend contract `/api/session` and `/api/chat`. Reuse LangGraph nodes and prompts, and adapt the hosting layer to Netlify Functions or an independent service. Replace SQLite with shared atomic Supabase/PostgreSQL quota handling; configure HTTPS Secure cookies, bot mitigation and budget caps. Do not move the private knowledge into the public build folder or source repository.
