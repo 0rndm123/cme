@@ -24,6 +24,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 Open **http://127.0.0.1:8765**. The demonstration document is for testing only; replace the file in `../cme_private/approved.md` with your reviewed Markdown. Every block needs a `## identifier` heading followed by one `PT:` and one `EN:` line. JSON `{"facts":[{"id":"...","pt":"...","en":"..."}]}` is also supported.
 
+**Choosing the document in the browser:** open the local interface and use **Base de conhecimento local → Caminho absoluto** to enter or paste a full Windows path (for example `C:\\Users\\Nelson\\cme_private\\approved.md`), then select **Aplicar ficheiro**. The server validates the Markdown/JSON file before saving the path to the local SQLite settings table; only the path is returned to the browser, never the contents. The file must be outside the public CME repository. This path setting persists over restarts and overrides `KNOWLEDGE_PATH` from `.env`. This browser setting is available **only on localhost** and must be protected with administrator authentication before deployment.
+
+**API keys:** no live API key is stored in GitHub or supplied in the repository. The configured provider is OpenAI through LangChain `ChatOpenAI`. Without an `OPENAI_API_KEY`, the system runs in extractive mode and makes **zero model API calls**. The default model name `gpt-4.1-mini` is only used if the private key is configured. Never paste your key into the browser, and do not commit `.env`.
+
 Leave `OPENAI_API_KEY` empty to test without paid model calls. For LLM answers, edit the **untracked** `.env` and set a model and your private key. The API key is only read server-side.
 
 ## Rate limits — rolling windows, atomically reserved
