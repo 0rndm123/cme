@@ -1,8 +1,7 @@
 {
   "knowledge": {
-    "paths": [
-      "../cme_private/approved.md"
-    ],
+    "directory": "../cme_private",
+    "paths": [],
     "retrieval": "keyword"
   },
   "vector_store": {
