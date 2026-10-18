@@ -36,8 +36,7 @@ def knowledge_path():
  finally:c.close()
  return Path(row[0]) if row else DEFAULT_KB
 
-def knowledge():
- kb=knowledge_path()
+def knowledge_from_file(kb):
  if not kb.is_file():return None
  if kb.stat().st_size > 1024*1024:raise ValueError('Knowledge file too large')
  if kb.suffix.lower()=='.json': f=json.loads(kb.read_text(encoding='utf8'))['facts']
@@ -52,6 +51,10 @@ def knowledge():
  else:raise ValueError('Unsupported knowledge format')
  if not f or any(not all(x.get(k) for k in ('id','pt','en')) for x in f):raise ValueError('Invalid knowledge')
  return f
+
+def knowledge():
+ return knowledge_from_file(knowledge_path())
+
 def evidence(question,facts):
  terms=set(re.findall(r'\w{4,}',question.lower()))
  scored=sorted(((len(terms & set(re.findall(r'\w{4,}',(f['pt']+' '+f['en']).lower()))),f) for f in facts),key=lambda p:-p[0])
@@ -157,6 +160,8 @@ def change_knowledge(req:Request, body:KnowledgeSettings):
   raise HTTPException(400,'Knowledge must be stored outside CME repository')
  if not candidate.is_file() or candidate.stat().st_size>1024*1024:
   raise HTTPException(400,'Knowledge file missing or too large')
+ try: knowledge_from_file(candidate)
+ except Exception: raise HTTPException(400,'Invalid knowledge content')
  c=db()
  try:
   c.execute('BEGIN IMMEDIATE')
