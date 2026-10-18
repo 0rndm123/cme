@@ -32,7 +32,7 @@ def extract(p:Path)->str:
         from python_calamine import CalamineWorkbook
         wb=CalamineWorkbook.from_path(str(p))
         rows=[]
-        for name in wb.sheets:
+        for name in wb.sheet_names:
             sheet=wb.get_sheet_by_name(name)
             rows.append('SHEET: '+name)
             for row in sheet.to_python():rows.append(' | '.join(str(x) if x is not None else '' for x in row))
