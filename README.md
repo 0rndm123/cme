@@ -17,6 +17,7 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
+Copy-Item config.example.json config.local.json
 New-Item -ItemType Directory -Force ..\cme_private
 Copy-Item examples\approved.example.md ..\cme_private\approved.md
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
@@ -24,11 +25,24 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 Open **http://127.0.0.1:8765**. The demonstration document is for testing only; replace the file in `../cme_private/approved.md` with your reviewed Markdown. Every block needs a `## identifier` heading followed by one `PT:` and one `EN:` line. JSON `{"facts":[{"id":"...","pt":"...","en":"..."}]}` is also supported.
 
-**Choosing the document in the browser:** open the local interface and use **Base de conhecimento local → Caminho absoluto** to enter or paste a full Windows path (for example `C:\\Users\\Nelson\\cme_private\\approved.md`), then select **Aplicar ficheiro**. The server validates the Markdown/JSON file before saving the path to the local SQLite settings table; only the path is returned to the browser, never the contents. The file must be outside the public CME repository. This path setting persists over restarts and overrides `KNOWLEDGE_PATH` from `.env`. This browser setting is available **only on localhost** and must be protected with administrator authentication before deployment.
+## Private configuration (not committed)
 
-**API keys:** no live API key is stored in GitHub or supplied in the repository. The configured provider is OpenAI through LangChain `ChatOpenAI`. Without an `OPENAI_API_KEY`, the system runs in extractive mode and makes **zero model API calls**. The default model name `gpt-4.1-mini` is only used if the private key is configured. Never paste your key into the browser, and do not commit `.env`.
+`config.example.json` is the **public template**. Create your personal `config.local.json` in the root of CME and edit it; this name is excluded by `.gitignore`:
 
-Leave `OPENAI_API_KEY` empty to test without paid model calls. For LLM answers, edit the **untracked** `.env` and set a model and your private key. The API key is only read server-side.
+```powershell
+Copy-Item config.example.json config.local.json
+```
+
+The local file contains:
+- `knowledge.paths`: one or more external Markdown/JSON files, outside the public repository. Paths can be absolute or relative to CME.
+- `knowledge.retrieval`: `keyword` in the current prototype.
+- `vector_store.enabled`, `provider`, `persist_directory`: reserved for a future RAG version. Keep `enabled=false` now; the prototype explicitly refuses to start if enabled.
+- `llm.provider`, `model`, `api_key_env`: provider/model and **only the NAME of an environment variable**, not its value.
+- `limits`: session, IP and global quotas.
+
+The actual key is retrieved on the server from the environment variable named by `llm.api_key_env` (by default `OPENAI_API_KEY`). Store its value in the local untracked `.env` file, for example `OPENAI_API_KEY=your-secret`, or in the Windows environment. No key is sent to the frontend or Git. Without a key the app uses its extractive mode. Restart FastAPI after editing the configuration.
+
+The browser displays the number of configured knowledge files; editing filesystem paths and environment variable references is intentionally done through the private configuration file, **not** a visitor-accessible endpoint. Never publish config.local.json, .env, private documents or vector indexes.
 
 ## Rate limits — rolling windows, atomically reserved
 
@@ -39,7 +53,7 @@ Leave `OPENAI_API_KEY` empty to test without paid model calls. For LLM answers, 
 - 500 total per 60min
 - 30 model calls globally per 24h
 
-SQLite counters survive app restarts. Since the local server runs on loopback, all local browsers share the same IP quota. Configure individual and global limits in `.env`. No financial hard cap is provided; the model provider's billing needs separate protection.
+SQLite counters survive app restarts. Since the local server runs on loopback, all local browsers share the same IP quota. Configure individual and global limits in `config.local.json`. No financial hard cap is provided; the model provider's billing needs separate protection.
 
 ## API
 
