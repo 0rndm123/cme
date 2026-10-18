@@ -48,12 +48,23 @@ def db():
  c.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
  return c
 def knowledge_paths():
- return [resolve_external(p) for p in CFG['knowledge']['paths']]
+ settings=CFG['knowledge']
+ files=[resolve_external(p) for p in settings.get('paths',[])]
+ folder=settings.get('directory')
+ if folder:
+  directory=resolve_external(folder)
+  if not directory.is_dir():return []
+  files.extend(p.resolve() for p in sorted(directory.rglob('*')) if p.is_file() and p.suffix.lower() in ('.md','.json') and not p.is_symlink())
+ return list(dict.fromkeys(files))
+
 def knowledge_path():
- return knowledge_paths()[0]
+ files=knowledge_paths()
+ return files[0] if files else None
+
 def knowledge_from_file(kb):
  if not kb.is_file():return None
- if kb == ROOT or ROOT in kb.parents: raise ValueError('Knowledge must remain outside repository')
+ if kb == ROOT or ROOT in kb.parents:
+  if not (ROOT/'private_knowledge') in kb.parents:raise ValueError('Knowledge inside repo must be in ignored private_knowledge folder')
  if kb.stat().st_size > 1024*1024:raise ValueError('Knowledge file too large')
  if kb.suffix.lower()=='.json': f=json.loads(kb.read_text(encoding='utf8'))['facts']
  elif kb.suffix.lower()=='.md':
@@ -74,7 +85,7 @@ def knowledge():
   facts=knowledge_from_file(kb)
   if not facts:return None
   items.extend(facts)
- return items
+ return items or None
 
 def evidence(question,facts):
  terms=set(re.findall(r'\w{4,}',question.lower()))
@@ -142,7 +153,7 @@ def session(req:Request):
  finally:c.close()
  try: has_kb=knowledge() is not None
  except Exception:has_kb=False
- out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'model':MODEL if KEY else None,'knowledge_loaded':has_kb,'knowledge_path':str(knowledge_path()),'knowledge_paths':[str(p) for p in knowledge_paths()],'vector_store_enabled':bool(CFG['vector_store'].get('enabled'))})
+ out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'model':MODEL if KEY else None,'knowledge_loaded':has_kb,'knowledge_path':str(knowledge_path()) if knowledge_path() else None,'knowledge_paths':[str(p) for p in knowledge_paths()],'vector_store_enabled':bool(CFG['vector_store'].get('enabled'))})
  out.set_cookie('cme_session',sid,httponly=True,samesite='strict',max_age=86400)
  return out
 class Q(BaseModel):
