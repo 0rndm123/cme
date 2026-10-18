@@ -2,7 +2,7 @@
   "knowledge": {
     "directory": "../cme_private",
     "paths": [],
-    "retrieval": "keyword"
+    "retrieval": "fts5"
   },
   "vector_store": {
     "enabled": false,
