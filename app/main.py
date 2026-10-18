@@ -14,11 +14,29 @@ PORT=int(os.getenv('LOCAL_PORT','8765'))
 def path(key,default):
  p=Path(os.getenv(key,default)).expanduser()
  return (p if p.is_absolute() else ROOT/p).resolve()
-DEFAULT_KB=path('KNOWLEDGE_PATH','../cme_private/approved.md')
+CONFIG_FILE=path('CME_CONFIG_PATH','config.local.json')
+def settings():
+ cfg=json.loads((ROOT/'config.example.json').read_text(encoding='utf8'))
+ if CONFIG_FILE.is_file():
+  local=json.loads(CONFIG_FILE.read_text(encoding='utf8'))
+  for key,value in local.items():
+   if key in cfg and isinstance(value,dict):cfg[key].update(value)
+   else:cfg[key]=value
+ if cfg['llm'].get('provider')!='openai':raise ValueError('Only OpenAI implemented')
+ if not re.fullmatch(r'[A-Z_][A-Z0-9_]*',cfg['llm'].get('api_key_env','')):
+  raise ValueError('Invalid env key name')
+ return cfg
+CFG=settings()
+def resolve_external(p):
+ target=Path(p).expanduser()
+ return (target if target.is_absolute() else ROOT/target).resolve()
+
 STATE=path('STATE_PATH','state/limits.sqlite3')
-KEY=os.getenv('OPENAI_API_KEY','').strip()
-MODEL=os.getenv('OPENAI_MODEL','gpt-4.1-mini')
-LIMITS={k:int(os.getenv(env,str(v))) for k,env,v in [('session','MAX_REQUESTS_SESSION',8),('ip_minute','MAX_REQUESTS_IP_MINUTE',3),('ip_day','MAX_REQUESTS_IP_DAY',15),('global_minute','MAX_REQUESTS_GLOBAL_MINUTE',50),('global_hour','MAX_REQUESTS_GLOBAL_HOUR',500),('llm_day','MAX_LLM_CALLS_DAY',30)]}
+KEY=os.getenv(CFG['llm']['api_key_env'],'').strip()
+MODEL=CFG['llm']['model']
+LIMITS={k:int(v) for k,v in CFG['limits'].items()}
+if CFG['vector_store'].get('enabled'):
+ raise ValueError('Vector-store mode is reserved for a future RAG implementation; set enabled=false')
 app=FastAPI(docs_url=None,redoc_url=None,openapi_url=None)
 def db():
  STATE.parent.mkdir(parents=True,exist_ok=True)
@@ -29,15 +47,13 @@ def db():
  c.execute('CREATE INDEX IF NOT EXISTS hits_ts ON hits(ts)')
  c.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
  return c
+def knowledge_paths():
+ return [resolve_external(p) for p in CFG['knowledge']['paths']]
 def knowledge_path():
- c=db()
- try:
-  row=c.execute("SELECT value FROM settings WHERE key='knowledge_path'").fetchone()
- finally:c.close()
- return Path(row[0]) if row else DEFAULT_KB
-
+ return knowledge_paths()[0]
 def knowledge_from_file(kb):
  if not kb.is_file():return None
+ if kb == ROOT or ROOT in kb.parents: raise ValueError('Knowledge must remain outside repository')
  if kb.stat().st_size > 1024*1024:raise ValueError('Knowledge file too large')
  if kb.suffix.lower()=='.json': f=json.loads(kb.read_text(encoding='utf8'))['facts']
  elif kb.suffix.lower()=='.md':
@@ -53,7 +69,12 @@ def knowledge_from_file(kb):
  return f
 
 def knowledge():
- return knowledge_from_file(knowledge_path())
+ items=[]
+ for kb in knowledge_paths():
+  facts=knowledge_from_file(kb)
+  if not facts:return None
+  items.extend(facts)
+ return items
 
 def evidence(question,facts):
  terms=set(re.findall(r'\w{4,}',question.lower()))
@@ -121,7 +142,7 @@ def session(req:Request):
  finally:c.close()
  try: has_kb=knowledge() is not None
  except Exception:has_kb=False
- out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'model':MODEL if KEY else None,'knowledge_loaded':has_kb,'knowledge_path':str(knowledge_path())})
+ out=JSONResponse({'quotas':limits,'model_enabled':bool(KEY),'model':MODEL if KEY else None,'knowledge_loaded':has_kb,'knowledge_path':str(knowledge_path()),'knowledge_paths':[str(p) for p in knowledge_paths()],'vector_store_enabled':bool(CFG['vector_store'].get('enabled'))})
  out.set_cookie('cme_session',sid,httponly=True,samesite='strict',max_age=86400)
  return out
 class Q(BaseModel):
@@ -145,30 +166,4 @@ async def chat(req:Request,q:Q):
 class KnowledgeSettings(BaseModel):
  knowledge_path:str=Field(min_length=5,max_length=1000)
 
-@app.post('/api/settings/knowledge')
-def change_knowledge(req:Request, body:KnowledgeSettings):
- sid=req.cookies.get('cme_session','')
- c=db()
- try:
-  valid=bool(sid and c.execute('SELECT 1 FROM sessions WHERE id=? AND created>?',(sid,time.time()-86400)).fetchone())
- finally:c.close()
- if not valid:raise HTTPException(403,'Session expired')
- candidate=Path(body.knowledge_path).expanduser().resolve()
- if not candidate.is_absolute() or candidate.suffix.lower() not in ('.md','.json'):
-  raise HTTPException(400,'Choose an absolute Markdown or JSON file path')
- if candidate == ROOT or ROOT in candidate.parents:
-  raise HTTPException(400,'Knowledge must be stored outside CME repository')
- if not candidate.is_file() or candidate.stat().st_size>1024*1024:
-  raise HTTPException(400,'Knowledge file missing or too large')
- try: knowledge_from_file(candidate)
- except Exception: raise HTTPException(400,'Invalid knowledge content')
- c=db()
- try:
-  c.execute('BEGIN IMMEDIATE')
-  c.execute("INSERT INTO settings(key,value) VALUES('knowledge_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(candidate),))
-  c.execute('COMMIT')
- except BaseException:
-  if c.in_transaction:c.execute('ROLLBACK')
-  raise
- finally:c.close()
- return {'ok':True,'knowledge_path':str(candidate)}
+# Local configuration is deliberately file-based; no browser endpoint can rewrite it.
